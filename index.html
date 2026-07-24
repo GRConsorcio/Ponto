@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>GR Consórcio · Folha de Ponto</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
   #auth-screen{position:fixed;inset:0;background:#0a0a0a;display:flex;align-items:center;justify-content:center;z-index:500;padding:20px;font-family:"Segoe UI","Inter",Arial,sans-serif;}
   .auth-box{width:360px;max-width:100%;background:#171512;border:1px solid #2a2416;border-radius:12px;padding:32px 28px;box-shadow:0 20px 60px rgba(0,0,0,.5);}
@@ -312,8 +313,9 @@
         automaticamente Entrada, Saída Almoço, Retorno Almoço e Saída — na ordem em que as batidas
         aconteceram naquele dia. Nada é importado até você conferir e clicar em "Aplicar".
       </p>
-      <input type="file" id="filePonto" accept=".txt,.csv,text/plain" style="margin-bottom:10px">
-      <textarea id="pontoTxtInput" placeholder="Ou cole aqui o conteúdo do arquivo exportado..." style="width:100%;min-height:110px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-family:monospace;font-size:12px;"></textarea>
+      <input type="file" id="filePonto" accept=".txt,.csv,text/plain,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="margin-bottom:10px">
+      <div class="small-note" id="pontoArquivoStatus" style="margin:0 0 8px;"></div>
+      <textarea id="pontoTxtInput" placeholder="Ou cole aqui o conteúdo do arquivo .txt exportado..." style="width:100%;min-height:110px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-family:monospace;font-size:12px;"></textarea>
       <div style="display:flex;gap:8px;margin-top:10px;">
         <button class="btn-outline" id="btnAnalisarPonto">Analisar</button>
         <span class="small-note" id="pontoAnaliseResumo" style="margin:0;align-self:center;"></span>
@@ -513,8 +515,19 @@ async function iniciarApp(){
   renderAll();
   atualizarVisibilidadeSeedBtn();
 }
-const ABONO_OBS = ['FERIADO','FÉRIAS','FERIAS','FOLGA','ATESTADO','ABONO','LICENÇA','LICENCA','BALÃO','BALAO'];
+// BALÃO não é mais abono (não descontava antes) — agora desconta o dia cheio,
+// junto com FALTA, ver DESCONTA_INTEGRAL_OBS/isDescontaIntegral abaixo.
+const ABONO_OBS = ['FERIADO','FÉRIAS','FERIAS','FOLGA','ATESTADO','ABONO','LICENÇA','LICENCA'];
 const OBS_OPTIONS = ['','FERIADO','FALTA','ATESTADO','FÉRIAS','FOLGA','ABONO','LICENÇA','BALÃO','JUSTIFICADO','NÃO DESCONTA'];
+// FALTA e BALÃO sempre descontam o dia inteiro (jornada cheia como "devida"),
+// mesmo que existam horários preenchidos por engano no dia — diferente de
+// FÉRIAS/ATESTADO/etc (abonos, não descontam nada).
+const DESCONTA_INTEGRAL_OBS = ['FALTA','BALÃO','BALAO'];
+function isDescontaIntegral(obs){
+  if(!obs) return false;
+  const up = obs.toString().trim().toUpperCase();
+  return DESCONTA_INTEGRAL_OBS.some(a => up.includes(a));
+}
 // "NÃO DESCONTA": usado quando o dia tem falta, atraso ou saída antecipada mas a empresa decide
 // não descontar. Diferente de FERIADO/ATESTADO/etc, aqui as horas efetivamente batidas continuam
 // contando normalmente (worked/extra) — só a coluna "devida" é zerada.
@@ -619,6 +632,7 @@ function calcDay(day, baseline){
   const kw = fieldKeyword(day);
   const abono = isAbono(day.obs) || (kw && isAbono(kw));
   const naoDesconta = isNaoDesconta(day.obs) || (kw && isNaoDesconta(kw));
+  const descontaIntegral = isDescontaIntegral(day.obs) || (kw && isDescontaIntegral(kw));
   if(weekend){
     return {worked:0, devida:0, extra:0, expected:false, status:'weekend'};
   }
@@ -627,12 +641,15 @@ function calcDay(day, baseline){
     // mas isso precisa ser esclarecido com o RH.
     return {worked:0, devida:0, extra:0, expected:false, status:'indefinido'};
   }
-  if(abono){
-    return {worked:0, devida:0, extra:0, expected:false, status:'abono'};
-  }
-  if(kw==='FALTA'){
+  // Checa ANTES do abono e independente de haver horário batido no dia — um dia
+  // marcado FALTA/BALÃO desconta a jornada cheia sempre, mesmo que tenha alguma
+  // batida solta lançada por engano.
+  if(descontaIntegral){
     if(baseline===null) return {worked:0, devida:0, extra:0, expected:false, status:'sem-regime'};
     return {worked:0, devida: naoDesconta?0:baseline, extra:0, expected:true, status: naoDesconta?'nao-desconta':'falta'};
+  }
+  if(abono){
+    return {worked:0, devida:0, extra:0, expected:false, status:'abono'};
   }
   if(baseline===null){
     return {worked:0, devida:0, extra:0, expected:false, status:'sem-regime'};
@@ -1341,6 +1358,67 @@ function parsePontoTxt(text){
   return out;
 }
 
+// Identifica qual campo (entrada/almoco/retorno/saida) um rótulo de tipo do
+// relógio representa. Confere "SAIDA ALMOÇO" antes de "SAIDA" sozinho, senão
+// "SAIDA ALMOÇO" seria classificado como saída final por engano.
+function normalizarTipoPonto(s){
+  const up = (s||'').toString().trim().toUpperCase()
+    .normalize('NFD').split('').filter(ch=>{const c=ch.codePointAt(0);return c<0x0300||c>0x036f;}).join('');
+  if(up.includes('RETORNO')) return 'retorno';
+  if(up.includes('SAIDA') && up.includes('ALMO')) return 'almoco';
+  if(up.includes('ENTRADA')) return 'entrada';
+  if(up.includes('SAIDA')) return 'saida';
+  return null;
+}
+
+// Lê um arquivo .xlsx exportado do relógio (planilha com colunas Nome / dept. /
+// Tempo [data e hora em texto] / Tipo [ENTRADA, SAIDA ALMOÇO, RETORNO ALMOÇO,
+// SAIDA]) e devolve o mesmo formato de entrada que parsePontoTxt(), com "tipo"
+// preenchido — a diferença é que aqui o tipo de cada batida já vem explícito
+// na planilha, não precisa adivinhar pela ordem de chegada.
+function parsePontoXlsxLinhas(linhas){
+  const out = [];
+  const reDataBR = /(\d{2})[\/\-.](\d{2})[\/\-.](\d{4})/;
+  const reHora = /(\d{1,2}):(\d{2})(?::(\d{2}))?/;
+  // Detecta a linha de cabeçalho ("Nome"/"Tempo") pra pular; se não achar,
+  // assume que a primeira linha já é cabeçalho (comportamento do arquivo real).
+  linhas.forEach((linha, idx)=>{
+    if(!linha || !linha.length) return;
+    const [nomeRaw, , tempoTexto, tipoTexto] = linha;
+    if(idx===0 && /nome/i.test(String(nomeRaw||''))) return; // linha de cabeçalho
+    if(!nomeRaw || !tempoTexto) return;
+    const texto = String(tempoTexto);
+    const mData = texto.match(reDataBR);
+    const mHora = texto.match(reHora);
+    if(!mData || !mHora) return;
+    const data = `${mData[3]}-${mData[2]}-${mData[1]}`;
+    const hora = `${mHora[1].padStart(2,'0')}:${mHora[2]}`;
+    const tipo = normalizarTipoPonto(tipoTexto);
+    const nome = String(nomeRaw).trim();
+    if(!nome) return;
+    out.push({ nomeRaw: nome, nomeNorm: pontoNormNome(nome), data, hora, tipo });
+  });
+  return out;
+}
+
+// Lê o arquivo .xlsx inteiro (via SheetJS, já carregado no <head>) e devolve
+// as linhas da primeira planilha como array de arrays (uma por linha).
+function lerXlsxComoLinhas(file){
+  return new Promise((resolve, reject)=>{
+    const reader = new FileReader();
+    reader.onload = (e)=>{
+      try{
+        const wb = XLSX.read(e.target.result, {type:'array'});
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        const linhas = XLSX.utils.sheet_to_json(sheet, {header:1, raw:false, defval:''});
+        resolve(linhas);
+      }catch(err){ reject(err); }
+    };
+    reader.onerror = () => reject(new Error('Não foi possível ler o arquivo.'));
+    reader.readAsArrayBuffer(file);
+  });
+}
+
 // Decide qual campo cada batida do dia preenche, pela ORDEM de chegada.
 function assignSlots(horasOrdenadas){
   const slots = { entrada:null, almoco:null, retorno:null, saida:null };
@@ -1368,26 +1446,24 @@ async function getEmployeesForPeriod(periodKey){
 
 let _pontoPreviewRows = []; // estado da prévia atual, entre "Analisar" e "Aplicar"
 
-async function analisarPontoTxt(){
-  const texto = document.getElementById('pontoTxtInput').value;
-  const parsed = parsePontoTxt(texto);
-  if(!parsed.length){
-    document.getElementById('pontoAnaliseResumo').textContent = 'Nenhuma linha com data e hora reconhecida.';
-    document.getElementById('pontoPreviewWrap').style.display = 'none';
-    document.getElementById('btnAplicarPonto').disabled = true;
-    return;
-  }
+// Monta as linhas de prévia a partir de batidas já extraídas (de um .txt ou de
+// um .xlsx) — cada entrada é {nomeRaw, nomeNorm, data, hora, tipo?}. Quando
+// "tipo" vem preenchido (entrada/almoco/retorno/saida — caso do .xlsx, que já
+// rotula cada batida) ele é usado direto; senão (caso do .txt, sem rótulo) cai
+// na ordem de chegada (assignSlots).
+async function construirPreviaDePonto(entradas){
   const nomeMap = loadNomeMap();
   // Agrupa por (identidade, data) — identidade = colaborador achado, ou o
   // próprio nome bruto quando não reconhecido.
   const grupos = {};
-  parsed.forEach(p=>{
+  entradas.forEach(p=>{
     const mapId = nomeMap[p.nomeNorm];
     const emp = (mapId && STATE.employees.find(e=>e.id===mapId))
       || matchEmployeeByName(p.nomeNorm, STATE.employees);
     const chave = (emp ? emp.id : 'SEMID::'+p.nomeNorm) + '|' + p.data;
-    if(!grupos[chave]) grupos[chave] = { empId: emp?emp.id:null, nomeRaw:p.nomeRaw, nomeNorm:p.nomeNorm, data:p.data, horas:[] };
+    if(!grupos[chave]) grupos[chave] = { empId: emp?emp.id:null, nomeRaw:p.nomeRaw, nomeNorm:p.nomeNorm, data:p.data, horas:[], porTipo:{} };
     grupos[chave].horas.push(p.hora);
+    if(p.tipo) grupos[chave].porTipo[p.tipo] = p.hora;
   });
 
   // Pré-busca (uma vez por mês distinto) os funcionários+dias já lançados,
@@ -1397,9 +1473,16 @@ async function analisarPontoTxt(){
   const empsPorPeriodo = {};
   for(const per of periodosNecessarios){ empsPorPeriodo[per] = await getEmployeesForPeriod(per); }
 
-  _pontoPreviewRows = Object.values(grupos).map(g=>{
-    g.horas.sort();
-    const { slots, obs } = assignSlots(g.horas);
+  return Object.values(grupos).map(g=>{
+    const temTipoExplicito = Object.keys(g.porTipo).length > 0;
+    let slots, obs;
+    if(temTipoExplicito){
+      slots = { entrada:g.porTipo.entrada||null, almoco:g.porTipo.almoco||null, retorno:g.porTipo.retorno||null, saida:g.porTipo.saida||null };
+      obs = null;
+    } else {
+      g.horas.sort();
+      ({slots, obs} = assignSlots(g.horas));
+    }
     const periodo = g.data.slice(0,7);
     let situacao = obs || 'ok';
     let conflito = false;
@@ -1420,13 +1503,32 @@ async function analisarPontoTxt(){
       slots, situacao, conflito, sobrescrever:false, selected:true,
     };
   }).sort((a,b)=> (a.nomeRaw+a.data).localeCompare(b.nomeRaw+b.data));
+}
 
-  renderPontoPreview();
+function atualizarResumoAnalise(qtdBatidas){
   const semId = _pontoPreviewRows.filter(r=>!r.empId).length;
   document.getElementById('pontoAnaliseResumo').textContent =
-    `${parsed.length} batida(s) lida(s) · ${_pontoPreviewRows.length} dia(s)/colaborador(es) · ${semId} sem colaborador identificado`;
+    `${qtdBatidas} batida(s) lida(s) · ${_pontoPreviewRows.length} dia(s)/colaborador(es) · ${semId} sem colaborador identificado`;
   document.getElementById('pontoPreviewWrap').style.display = 'block';
   document.getElementById('btnAplicarPonto').disabled = false;
+}
+
+// Batidas já extraídas de um .xlsx carregado (ver wiring de #filePonto),
+// aguardando o clique em "Analisar". null quando o arquivo carregado é .txt
+// (nesse caso lê direto da textarea, que é editável/colável).
+let _xlsxCarregado = null;
+
+async function analisarPontoArquivo(){
+  const parsed = _xlsxCarregado || parsePontoTxt(document.getElementById('pontoTxtInput').value);
+  if(!parsed.length){
+    document.getElementById('pontoAnaliseResumo').textContent = 'Nenhuma linha com data e hora reconhecida.';
+    document.getElementById('pontoPreviewWrap').style.display = 'none';
+    document.getElementById('btnAplicarPonto').disabled = true;
+    return;
+  }
+  _pontoPreviewRows = await construirPreviaDePonto(parsed);
+  renderPontoPreview();
+  atualizarResumoAnalise(parsed.length);
 }
 
 function renderPontoPreview(){
@@ -1516,10 +1618,13 @@ async function aplicarPontoImport(){
   toast(`Ponto importado: ${aplicados} dia(s) preenchido(s), ${ignorados} ignorado(s).`);
   closeModal('modalImportPonto');
   document.getElementById('pontoTxtInput').value = '';
+  document.getElementById('pontoTxtInput').disabled = false;
   document.getElementById('filePonto').value = '';
+  document.getElementById('pontoArquivoStatus').textContent = '';
   document.getElementById('pontoPreviewWrap').style.display = 'none';
   document.getElementById('btnAplicarPonto').disabled = true;
   _pontoPreviewRows = [];
+  _xlsxCarregado = null;
 }
 
 // ================= MODALS =================
@@ -1551,15 +1656,34 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnImportar').addEventListener('click', ()=>openModal('modalImport'));
 
   document.getElementById('btnImportarPonto').addEventListener('click', ()=>openModal('modalImportPonto'));
-  document.getElementById('btnAnalisarPonto').addEventListener('click', analisarPontoTxt);
+  document.getElementById('btnAnalisarPonto').addEventListener('click', analisarPontoArquivo);
   document.getElementById('btnAplicarPonto').addEventListener('click', aplicarPontoImport);
-  document.getElementById('filePonto').addEventListener('change', (e)=>{
+  document.getElementById('filePonto').addEventListener('change', async (e)=>{
     const f = e.target.files[0];
     if(!f) return;
-    const reader = new FileReader();
-    reader.onload = () => { document.getElementById('pontoTxtInput').value = reader.result; };
-    reader.onerror = () => toast('Não foi possível ler o arquivo.');
-    reader.readAsText(f, 'utf-8');
+    const statusEl = document.getElementById('pontoArquivoStatus');
+    const ehXlsx = /\.xlsx?$/i.test(f.name);
+    if(ehXlsx){
+      try{
+        const linhas = await lerXlsxComoLinhas(f);
+        _xlsxCarregado = parsePontoXlsxLinhas(linhas);
+        document.getElementById('pontoTxtInput').value = '';
+        document.getElementById('pontoTxtInput').disabled = true;
+        statusEl.textContent = `📊 ${f.name}: ${_xlsxCarregado.length} batida(s) reconhecida(s). Clique em "Analisar".`;
+      }catch(err){
+        _xlsxCarregado = null;
+        toast('Erro ao ler o Excel: ' + err.message);
+        statusEl.textContent = '';
+      }
+    } else {
+      _xlsxCarregado = null;
+      document.getElementById('pontoTxtInput').disabled = false;
+      statusEl.textContent = '';
+      const reader = new FileReader();
+      reader.onload = () => { document.getElementById('pontoTxtInput').value = reader.result; };
+      reader.onerror = () => toast('Não foi possível ler o arquivo.');
+      reader.readAsText(f, 'utf-8');
+    }
   });
   document.getElementById('pontoSelAll').addEventListener('change', (e)=>{
     _pontoPreviewRows.forEach(r=>r.selected = e.target.checked);

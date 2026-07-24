@@ -485,7 +485,12 @@ async function doPontoLogin(){
     await sb.auth.signOut();
     return;
   }
-  await iniciarApp();
+  try{
+    await iniciarApp();
+  }catch(e){
+    console.error('[Ponto] erro ao iniciar app:', e.message);
+    errEl.textContent = 'Login ok, mas houve um erro ao carregar a tela: ' + e.message;
+  }
 }
 
 async function verificarAcessoPonto(userId){
@@ -506,7 +511,6 @@ async function iniciarApp(){
   STATE = await loadState();
   currentEmpId = STATE.employees[0] ? STATE.employees[0].id : null;
   renderAll();
-  agendarResetMeiaNoite();
   atualizarVisibilidadeSeedBtn();
 }
 const ABONO_OBS = ['FERIADO','FÉRIAS','FERIAS','FOLGA','ATESTADO','ABONO','LICENÇA','LICENCA','BALÃO','BALAO'];
@@ -1523,15 +1527,13 @@ function openModal(id){ document.getElementById(id).classList.add('show'); }
 function closeModal(id){ document.getElementById(id).classList.remove('show'); }
 
 // ================= INIT / EVENTS =================
-document.addEventListener('DOMContentLoaded', async () => {
-  // Sessão já existente (ex: F5 na página) pula direto pro app sem pedir login de novo.
-  const {data:{session}} = await sb.auth.getSession();
-  if(session && await verificarAcessoPonto(session.user.id)){
-    await iniciarApp();
-  } else if(session){
-    await sb.auth.signOut(); // tinha sessão de CRM mas não tem acesso ao Ponto
-  }
-
+document.addEventListener('DOMContentLoaded', () => {
+  // IMPORTANTE: conecta TODOS os botões primeiro, de forma síncrona. A checagem
+  // de sessão (abaixo) é assíncrona e pode falhar por vários motivos (rede,
+  // bug futuro etc.) — se ela rodasse antes e desse erro, o restante deste
+  // bloco (incluindo conectar "Sair" e todo o resto) nunca seria executado,
+  // deixando a página inteira sem nenhum botão funcionando. Foi exatamente
+  // isso que aconteceu quando iniciarApp() chamou uma função inexistente.
   document.getElementById('btnPontoLogout').addEventListener('click', doPontoLogout);
   document.getElementById('btnImportarSeed').addEventListener('click', importarSeedInicial);
 
@@ -1590,6 +1592,23 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // auto-save state também no beforeunload
   window.addEventListener('beforeunload', ()=>saveState(true));
+
+  // Checagem de sessão existente (ex: F5 na página pula direto pro app sem
+  // pedir login de novo) — roda por último e isolada num try/catch, pra um
+  // erro aqui nunca voltar a travar a conexão dos botões acima.
+  (async () => {
+    try{
+      const {data:{session}} = await sb.auth.getSession();
+      if(session && await verificarAcessoPonto(session.user.id)){
+        await iniciarApp();
+      } else if(session){
+        await sb.auth.signOut(); // tinha sessão de CRM mas não tem acesso ao Ponto
+      }
+    }catch(e){
+      console.error('[Ponto] erro ao checar sessão:', e.message);
+      document.getElementById('auth-err').textContent = 'Erro ao carregar: ' + e.message;
+    }
+  })();
 });
 
 </script>

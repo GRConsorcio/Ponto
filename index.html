@@ -123,11 +123,11 @@
   .tag.devida{ background:var(--warn-bg); color:var(--warn); }
   .tag.neutro{ background:#f1ede0; color:var(--muted); }
 
-  input[type=time], input[type=month], select.obsSel, input.txtSel{
+  input[type=time], input[type=month], input[type=date], select.obsSel, input.txtSel{
     border:1px solid var(--line); border-radius:6px; padding:5px 6px; font-size:12.5px; width:100%; min-width:78px;
     font-family: inherit; background:#fff;
   }
-  input[type=time]:focus, input[type=month]:focus, select.obsSel:focus{ outline:2px solid var(--gold); outline-offset:1px; }
+  input[type=time]:focus, input[type=month]:focus, input[type=date]:focus, select.obsSel:focus{ outline:2px solid var(--gold); outline-offset:1px; }
   td.readonly{ color:var(--muted); }
   .rankCol{ width:34px; text-align:center; color:var(--muted); font-weight:700; }
 
@@ -322,6 +322,16 @@
       </div>
 
       <div id="pontoPreviewWrap" style="display:none;margin-top:14px;">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;padding:8px 10px;background:var(--bg,#f7f5ec);border:1px solid var(--line);border-radius:8px;">
+          <span class="small-note" style="margin:0;font-weight:600;">Seleção em massa por data:</span>
+          <span class="small-note" style="margin:0;">de</span>
+          <input type="date" id="pontoFiltroDe" style="max-width:150px;">
+          <span class="small-note" style="margin:0;">até</span>
+          <input type="date" id="pontoFiltroAte" style="max-width:150px;">
+          <button class="btn-outline" id="btnPontoMarcarPeriodo" type="button" style="padding:5px 10px;font-size:12px;">✓ Marcar só esse período</button>
+          <button class="btn-outline" id="btnPontoDesmarcarPeriodo" type="button" style="padding:5px 10px;font-size:12px;">✕ Desmarcar esse período</button>
+          <span class="small-note" id="pontoFiltroErro" style="margin:0;color:#c0392b;"></span>
+        </div>
         <div style="max-height:340px;overflow:auto;border:1px solid var(--line);border-radius:8px;">
           <table style="font-size:12px;">
             <thead><tr>
@@ -1580,6 +1590,14 @@ function renderPontoPreview(){
       renderPontoPreview();
     });
   });
+
+  // Mantém o checkbox "selecionar tudo" do cabeçalho refletindo o estado
+  // real das linhas (inclusive parcialmente marcado, via indeterminate) —
+  // sem isso ele ficava desatualizado depois de usar a seleção por período.
+  const selAll = document.getElementById('pontoSelAll');
+  const marcados = _pontoPreviewRows.filter(r=>r.selected).length;
+  selAll.checked = marcados===_pontoPreviewRows.length && marcados>0;
+  selAll.indeterminate = marcados>0 && marcados<_pontoPreviewRows.length;
 }
 
 async function aplicarPontoImport(){
@@ -1688,6 +1706,33 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('pontoSelAll').addEventListener('change', (e)=>{
     _pontoPreviewRows.forEach(r=>r.selected = e.target.checked);
     renderPontoPreview();
+  });
+
+  // Seleção em massa por data: em vez de marcar/desmarcar linha por linha
+  // num arquivo com muitos dias/colaboradores, escolhe um período (de/até)
+  // e aplica de uma vez só pra tudo que estiver dentro dele.
+  function lerPeriodoFiltro(){
+    const de = document.getElementById('pontoFiltroDe').value;
+    const ate = document.getElementById('pontoFiltroAte').value;
+    const erroEl = document.getElementById('pontoFiltroErro');
+    if(!de || !ate){ erroEl.textContent = 'Preencha as duas datas.'; return null; }
+    if(de > ate){ erroEl.textContent = '"De" não pode ser depois de "até".'; return null; }
+    erroEl.textContent = '';
+    return {de, ate};
+  }
+  document.getElementById('btnPontoMarcarPeriodo').addEventListener('click', ()=>{
+    const periodo = lerPeriodoFiltro();
+    if(!periodo) return;
+    _pontoPreviewRows.forEach(r=>{ r.selected = (r.data >= periodo.de && r.data <= periodo.ate); });
+    renderPontoPreview();
+    toast('Seleção ajustada pro período escolhido.');
+  });
+  document.getElementById('btnPontoDesmarcarPeriodo').addEventListener('click', ()=>{
+    const periodo = lerPeriodoFiltro();
+    if(!periodo) return;
+    _pontoPreviewRows.forEach(r=>{ if(r.data >= periodo.de && r.data <= periodo.ate) r.selected = false; });
+    renderPontoPreview();
+    toast('Período desmarcado.');
   });
 
   document.getElementById('btnAddEmp').addEventListener('click', openAddEmpModal);

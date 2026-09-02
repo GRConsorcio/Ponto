@@ -380,6 +380,8 @@
     <div class="body">
       <label style="display:block;margin-bottom:4px;">Nome</label>
       <input type="text" id="editCargoNomeInput" placeholder="Ex: MARIA SILVA" style="width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px;margin-bottom:12px;">
+      <label style="display:block;margin-bottom:4px;">CPF</label>
+      <input type="text" id="editCargoCpfInput" placeholder="000.000.000-00" style="width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px;margin-bottom:12px;">
       <label style="display:block;margin-bottom:4px;">Cargo</label>
       <input type="text" id="editCargoInput" placeholder="Ex: VENDEDOR DE CONSÓRCIO" style="width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px;margin-bottom:12px;">
 
@@ -994,6 +996,7 @@ function openEditCargoModal(id){
   const emp = findEmp(id);
   if(!emp) return;
   document.getElementById('editCargoNomeInput').value = emp.nome || '';
+  document.getElementById('editCargoCpfInput').value = emp.cpf || '';
   document.getElementById('editCargoInput').value = emp.cargo || '';
   const presetKey = matchRegimePreset(emp);
   document.getElementById('editRegimePreset').value = presetKey;
@@ -1008,6 +1011,7 @@ async function saveEditCargo(){
   if(!emp) return;
   const nome = document.getElementById('editCargoNomeInput').value.trim().toUpperCase();
   if(!nome){ toast('Informe o nome do colaborador.'); return; }
+  const cpf = document.getElementById('editCargoCpfInput').value.trim() || null;
   const cargo = document.getElementById('editCargoInput').value.trim().toUpperCase();
   const presetKey = document.getElementById('editRegimePreset').value;
   let inicio, fim, label;
@@ -1022,10 +1026,11 @@ async function saveEditCargo(){
   }
   const novoCargo = cargo || emp.cargo;
   const {error} = await sb.from('ponto_funcionarios').update({
-    nome, cargo: novoCargo, regime_inicio: inicio, regime_fim: fim, regime_label: label
+    nome, cpf, cargo: novoCargo, regime_inicio: inicio, regime_fim: fim, regime_label: label
   }).eq('id', emp.id);
   if(error){ toast('Erro ao salvar: ' + error.message); return; }
   emp.nome = nome;
+  emp.cpf = cpf;
   emp.cargo = novoCargo;
   emp.regime_inicio = inicio;
   emp.regime_fim = fim;

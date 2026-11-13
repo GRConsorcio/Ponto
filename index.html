@@ -1084,6 +1084,40 @@ async function addEmployee(){
     inicio = p.inicio; fim = p.fim; label = p.label;
   }
 
+  // BUGFIX: antes, "Remover" + "Adicionar" a mesma pessoa criava um cadastro
+  // NOVO (id novo) e todo o histórico ficava preso no cadastro antigo/inativo,
+  // sumindo da folha. Agora, se já existe cadastro com o mesmo CPF ou nome,
+  // ele é reativado e o histórico volta junto.
+  let existente = null;
+  if(cpf){
+    const {data} = await sb.from('ponto_funcionarios').select('*').eq('cpf', cpf)
+      .order('ativo', {ascending:false}).order('criado_em', {ascending:true}).limit(1);
+    existente = (data && data[0]) || null;
+  }
+  if(!existente){
+    const {data} = await sb.from('ponto_funcionarios').select('*').eq('nome', nome)
+      .order('ativo', {ascending:false}).order('criado_em', {ascending:true}).limit(1);
+    existente = (data && data[0]) || null;
+  }
+  if(existente && existente.ativo){
+    toast(`${nome} já está na folha (cadastro ativo).`);
+    return;
+  }
+  if(existente){
+    const {error: reErr} = await sb.from('ponto_funcionarios').update({
+      ativo: true, nome, sheet: nome, cpf: cpf || existente.cpf || null, cargo: cargo || existente.cargo || '—',
+      regime_label: label, regime_inicio: inicio, regime_fim: fim
+    }).eq('id', existente.id);
+    if(reErr){ toast('Erro ao reativar: ' + reErr.message); return; }
+    STATE.employees = await carregarFuncionariosComDias(STATE.currentPeriod);
+    currentEmpId = existente.id;
+    renderAll();
+    document.getElementById('detailPanel').style.display = 'block';
+    closeModal('modalAddEmp');
+    toast(`${nome} reativado(a) — histórico anterior mantido.`);
+    return;
+  }
+
   const [refYear, refMonth] = STATE.currentPeriod.split('-').map(Number);
   const {data: inserted, error} = await sb.from('ponto_funcionarios').insert({
     sheet: nome, nome, cpf: cpf || null, cargo: cargo || '—',
@@ -1127,7 +1161,11 @@ function exportJSON(){
 // Reaproveitado por importJSONFile() e importarSeedInicial().
 async function upsertFuncionarioEDias(emp){
   let funcId;
-  const {data: existing} = await sb.from('ponto_funcionarios').select('id').eq('nome', emp.nome).maybeSingle();
+  // limit(1) em vez de maybeSingle(): com 2 cadastros de mesmo nome o maybeSingle
+  // dava erro, "existing" vinha vazio e criava um 3º cadastro.
+  const {data: existingRows} = await sb.from('ponto_funcionarios').select('id').eq('nome', emp.nome)
+    .order('ativo', {ascending:false}).order('criado_em', {ascending:true}).limit(1);
+  const existing = (existingRows && existingRows[0]) || null;
   if(existing){
     funcId = existing.id;
     await sb.from('ponto_funcionarios').update({
